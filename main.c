@@ -31,6 +31,65 @@ void file_write(const char* file_name, const u8* bytes, size_t count) {
     fclose(file);
 }
 
+base64_t base64_value_get_digit(u8 value) {
+    #define TRY(smallest, biggest) \
+    do { \
+        if (value <= biggest - smallest) { \
+            return value + smallest; \
+        } \
+        value -= biggest - smallest + 1; \
+    } while (0)
+
+    TRY('A', 'Z');
+    TRY('a', 'z');
+    TRY('0', '9');
+    TRY('+', '+');
+    TRY('/', '/');
+
+    return BASE64_ERROR;
+
+    #undef TRY
+}
+
+void base64_encode_triplet(u8* bytes_triplet, base64_t* base64_quartet) {
+    base64_quartet[0] = base64_value_get_digit(bytes_triplet[0] >> 2);
+    base64_quartet[1] = base64_value_get_digit(((bytes_triplet[0] & 0x3) << 4) | (bytes_triplet[1] >> 4));
+    base64_quartet[2] = base64_value_get_digit(((bytes_triplet[1] & 0xF) << 2) | (bytes_triplet[2] >> 6));
+    base64_quartet[3] = base64_value_get_digit(bytes_triplet[2] & 0x3F);
+}
+
+void base64_encode(const char* src_file, const char* dst_file) {
+    size_t bytes_length;
+    u8* bytes = file_read(src_file, &bytes_length);
+    size_t padding_count = (3 - bytes_length % 3) % 3;
+
+    if (padding_count > 0) {
+        bytes = realloc(bytes, bytes_length + padding_count);
+
+        for (size_t i = 0; i < padding_count; i++) {
+            bytes[bytes_length++] = '\0';
+        }
+    }
+
+    base64_t* base64 = malloc(bytes_length * 4 / 3);
+    size_t base64_i = 0;
+
+    for (size_t bytes_i = 0; bytes_i < bytes_length; bytes_i += 3) {
+        base64_encode_triplet(bytes + bytes_i, base64 + base64_i);
+        base64_i += 4;
+    }
+
+    for (size_t i = 0; i < padding_count; i++) {
+        base64[base64_i - i - 1] = '=';
+    }
+
+    if (dst_file == NULL) {
+        printf("%.*s\n", base64_i, base64);
+    } else {
+        file_write(dst_file, base64, base64_i);
+    }
+}
+
 u8 base64_digit_get_value(base64_t digit) {
     #define TRY(smallest, biggest) \
     do { \
@@ -102,65 +161,6 @@ void base64_decode(const char* src_file, const char* dst_file) {
 
     free(base64);
     free(bytes);
-}
-
-base64_t base64_value_get_digit(u8 value) {
-    #define TRY(smallest, biggest) \
-    do { \
-        if (value <= biggest - smallest) { \
-            return value + smallest; \
-        } \
-        value -= biggest - smallest + 1; \
-    } while (0)
-
-    TRY('A', 'Z');
-    TRY('a', 'z');
-    TRY('0', '9');
-    TRY('+', '+');
-    TRY('/', '/');
-
-    return BASE64_ERROR;
-
-    #undef TRY
-}
-
-void base64_encode_triplet(u8* bytes_triplet, base64_t* base64_quartet) {
-    base64_quartet[0] = base64_value_get_digit(bytes_triplet[0] >> 2);
-    base64_quartet[1] = base64_value_get_digit(((bytes_triplet[0] & 0x3) << 4) | (bytes_triplet[1] >> 4));
-    base64_quartet[2] = base64_value_get_digit(((bytes_triplet[1] & 0xF) << 2) | (bytes_triplet[2] >> 6));
-    base64_quartet[3] = base64_value_get_digit(bytes_triplet[2] & 0x3F);
-}
-
-void base64_encode(const char* src_file, const char* dst_file) {
-    size_t bytes_length;
-    u8* bytes = file_read(src_file, &bytes_length);
-    size_t padding_count = (3 - bytes_length % 3) % 3;
-
-    if (padding_count > 0) {
-        bytes = realloc(bytes, bytes_length + padding_count);
-
-        for (size_t i = 0; i < padding_count; i++) {
-            bytes[bytes_length++] = '\0';
-        }
-    }
-
-    base64_t* base64 = malloc(bytes_length * 4 / 3);
-    size_t base64_i = 0;
-
-    for (size_t bytes_i = 0; bytes_i < bytes_length; bytes_i += 3) {
-        base64_encode_triplet(bytes + bytes_i, base64 + base64_i);
-        base64_i += 4;
-    }
-
-    for (size_t i = 0; i < padding_count; i++) {
-        base64[base64_i - i - 1] = '=';
-    }
-
-    if (dst_file == NULL) {
-        printf("%.*s\n", base64_i, base64);
-    } else {
-        file_write(dst_file, base64, base64_i);
-    }
 }
 
 int main(int argc, char** argv) {
