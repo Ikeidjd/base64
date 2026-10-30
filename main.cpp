@@ -13,10 +13,13 @@
 
 using u8 = unsigned char;
 
-std::string file_read(const std::string& file_path) {
+std::optional<std::string> file_read(const std::string& file_path) {
     std::ifstream file(file_path, std::ios_base::binary);
+    if (!file.good()) return std::nullopt;
+
     std::stringstream sstr;
     sstr << file.rdbuf();
+
     return sstr.str();
 }
 
@@ -64,7 +67,7 @@ namespace base64 {
         return out;
     }
 
-    Result encode(const std::string& _bytes) {
+    std::string encode(const std::string& _bytes) {
         std::string bytes = _bytes;
         std::size_t padding = 0;
 
@@ -181,27 +184,43 @@ int main(int argc, char** argv) {
     }
 
     std::string src_file = argv[2];
-    std::optional<std::string> dst_file = argc == 4 ? std::optional(argv[3]) : std::nullopt;
+    std::optional<std::string> dst_file_opt = argc == 4 ? std::optional(argv[3]) : std::nullopt;
 
-    std::string src = file_read(src_file);
-    base64::Result dst;
+    std::string src;
 
-    if (argv[1] == std::string_view("encode")) {
-        dst = base64::encode(src);
+    if (auto src_opt = file_read(src_file)) {
+        src = *src_opt;
     } else {
-        dst = base64::decode(src);
+        std::println(std::cerr, "Could not read file '{}'.", src_file);
+        return -1;
     }
 
-    if (dst) {
-        if (dst_file) {
-            std::ofstream file(*dst_file, std::ios_base::binary);
-            std::print(file, "{}", *dst);
-            std::println("Data was successfully written to file '{}'.", *dst_file);
+    base64::Result dst_opt;
+
+    if (argv[1] == std::string_view("encode")) {
+        dst_opt = base64::encode(src);
+    } else {
+        dst_opt = base64::decode(src);
+    }
+
+    if (dst_opt) {
+        std::string dst = std::move(*dst_opt);
+
+        if (dst_file_opt) {
+            std::string dst_file = std::move(*dst_file_opt);
+            std::ofstream file(dst_file, std::ios_base::binary);
+
+            if (file.good()) {
+                std::print(file, "{}", dst);
+                std::println("Data was successfully written to file '{}'.", dst_file);
+            } else {
+                std::println(std::cerr, "Could not write to file '{}'.", dst_file);
+            }
         } else {
-            std::println("{}", *dst);
+            std::println("{}", dst);
         }
     } else {
-        std::println(std::cerr, "Invalid base64 string: {}.", dst.error());
+        std::println(std::cerr, "Invalid base64 string: {}.", dst_opt.error());
     }
 
     return 0;
