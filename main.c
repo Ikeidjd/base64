@@ -2,7 +2,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <stdbool.h>
 
+#define BASE64_OKAY 0
 #define BASE64_ERROR 64
 
 typedef unsigned char u8;
@@ -25,10 +27,18 @@ u8* file_read(const char* file_name, size_t* out_bytes_read) {
     return buf;
 }
 
-void file_write(const char* file_name, const u8* bytes, size_t count) {
+bool file_write(const char* file_name, const u8* bytes, size_t count) {
     FILE* file = fopen(file_name, "wb");
+    
+    if (file == NULL) {
+        fprintf(stderr, "Could not write to file '%s'.", file_name);
+        return false;
+    }
+
     fwrite(bytes, sizeof(bytes[0]), count, file);
     fclose(file);
+
+    return true;
 }
 
 base64_t base64_value_get_digit(u8 value) {
@@ -58,18 +68,13 @@ void base64_encode_triplet(u8* bytes_triplet, base64_t* base64_quartet) {
     base64_quartet[3] = base64_value_get_digit(bytes_triplet[2] & 0x3F);
 }
 
-void base64_encode(const char* src_file, const char* dst_file) {
-    size_t bytes_length;
-    u8* bytes = file_read(src_file, &bytes_length);
+base64_t* base64_encode(const u8* _bytes, size_t bytes_length, size_t* base64_length) {
     size_t padding_count = (3 - bytes_length % 3) % 3;
 
-    if (padding_count > 0) {
-        bytes = realloc(bytes, bytes_length + padding_count);
+    u8* bytes = calloc(bytes_length, sizeof(bytes[0]));
+    memcpy(bytes, _bytes, bytes_length * sizeof(_bytes[0]));
 
-        for (size_t i = 0; i < padding_count; i++) {
-            bytes[bytes_length++] = '\0';
-        }
-    }
+    bytes_length += padding_count;
 
     base64_t* base64 = malloc(bytes_length * 4 / 3);
     size_t base64_i = 0;
@@ -79,15 +84,14 @@ void base64_encode(const char* src_file, const char* dst_file) {
         base64_i += 4;
     }
 
+    free(bytes);
+
     for (size_t i = 0; i < padding_count; i++) {
         base64[base64_i - i - 1] = '=';
     }
 
-    if (dst_file == NULL) {
-        printf("%.*s\n", base64_i, base64);
-    } else {
-        file_write(dst_file, base64, base64_i);
-    }
+    *base64_length = base64_i;
+    return base64;
 }
 
 u8 base64_digit_get_value(base64_t digit) {
@@ -107,60 +111,78 @@ u8 base64_digit_get_value(base64_t digit) {
     TRY('+', '+');
     TRY('/', '/');
 
-    return digit == '=' ? 0 : BASE64_ERROR;
+    return BASE64_ERROR;
 
     #undef TRY
 }
 
-void base64_decode_quartet(base64_t* base64_quartet, u8* bytes_triplet) {
-    u8 digit0 = base64_digit_get_value(base64_quartet[0]);
-    u8 digit1 = base64_digit_get_value(base64_quartet[1]);
-    u8 digit2 = base64_digit_get_value(base64_quartet[2]);
-    u8 digit3 = base64_digit_get_value(base64_quartet[3]);
+// Returns 0 if everything goes well
+// Returns index + 1 if something goes wrong so you know where it happened
+int base64_decode_quartet(base64_t* base64_quartet, u8* bytes_triplet) {
+    #define TRY(index) \
+    u8 value ## index = base64_digit_get_value(base64_quartet[index]); \
+    if (value ## index == BASE64_ERROR) return index + 1;
 
-    bytes_triplet[0] = (digit0 << 2) | (digit1 >> 4);
-    bytes_triplet[1] = (digit1 << 4) | (digit2 >> 2);
-    bytes_triplet[2] = (digit2 << 6) | (digit3 >> 0);
+    TRY(0);
+    TRY(1);
+    TRY(2);
+    TRY(3);
+
+    bytes_triplet[0] = (value0 << 2) | (value1 >> 4);
+    bytes_triplet[1] = (value1 << 4) | (value2 >> 2);
+    bytes_triplet[2] = (value2 << 6) | (value3 >> 0);
+
+    return BASE64_OKAY;
+
+    #undef TRY
 }
 
-void base64_decode(const char* src_file, const char* dst_file) {
-    size_t base64_length;
-    base64_t* base64 = file_read(src_file, &base64_length);
-
-    if (base64 == NULL) {
-        printf("Could not read file \"%s\".\n", src_file);
-        exit(-1);
-    }
-
+u8* base64_decode(base64_t* base64, size_t base64_length, size_t* bytes_length) {
     if (base64_length % 4 != 0) {
-        printf("Invalid base64 string: length must be a multiple of 4. This might be fixed by adding some '=' characters at the end.\n");
-        exit(-1);
+        fprintf(stderr, "Invalid base64 string: length must be a multiple of 4. This might be fixed by adding one or two '=' characters at the end.\n");
+        return NULL;
     }
 
     size_t padding_count = 0;
 
-    for (size_t i = base64_length - 1; base64[i] == '='; i--) {
+    // i could become >= base64_length due to overflow if every single character is '=' or if there are 0 characters
+    for (size_t i = base64_length - 1; padding_count < 2 && i < base64_length && base64[i] == '='; i--) {
         padding_count++;
+        base64[i] = 'A';
     }
 
     u8* bytes = malloc(base64_length * 3 / 4);
     size_t bytes_i = 0;
 
     for (size_t base64_i = 0; base64_i < base64_length; base64_i += 4) {
-        base64_decode_quartet(base64 + base64_i, bytes + bytes_i);
+        int out = base64_decode_quartet(base64 + base64_i, bytes + bytes_i);
+
+        if (out != 0) {
+            int error_relative_index = out - 1;
+            int error_absolute_index = base64_i + error_relative_index;
+            base64_t error_digit = base64[error_absolute_index];
+
+            if (error_digit == '=') {
+                fprintf(
+                    stderr,
+                    "Invalid base64 string: padding character '%c' is only allowed at the end, a maximum of two times in a row, but was found at position %d (starting from 0)).\n",
+                    error_digit, error_absolute_index
+                );
+            } else {
+                fprintf(stderr, "Invalid base64 string: invalid base64 digit '%c' at position %d (starting from 0).\n", error_digit, error_absolute_index);
+            }
+
+            free(bytes);
+            return NULL;
+        }
+
         bytes_i += 3;
     }
 
     bytes_i -= padding_count; // Remove the padding null bytes
 
-    if (dst_file == NULL) {
-        printf("%.*s\n", bytes_i, bytes);
-    } else {
-        file_write(dst_file, bytes, bytes_i);
-    }
-
-    free(base64);
-    free(bytes);
+    *bytes_length = bytes_i;
+    return bytes;
 }
 
 int main(int argc, char** argv) {
@@ -175,8 +197,46 @@ int main(int argc, char** argv) {
     const char* src_file = argv[2];
     const char* dst_file = argc == 4 ? argv[3] : NULL;
 
-    if (strcmp(cmd, "encode") == 0) base64_encode(src_file, dst_file);
-    else base64_decode(src_file, dst_file);
+    size_t length;
+    u8* src = file_read(src_file, &length);
 
-    return 0;
+    if (src == NULL) {
+        printf("Could not read file '%s'.\n", src_file);
+        return -1;
+    }
+
+    u8* dst;
+
+    if (strcmp(cmd, "encode") == 0) {
+        dst = base64_encode(src, length, &length);
+    } else {
+        dst = base64_decode(src, length, &length);
+
+        if (dst == NULL) {
+            free(src);
+            return -1;
+        }
+    }
+
+    int out = 0;
+
+    if (dst_file == NULL) {
+        // This is used instead of printf in case dst contains null characters
+        // I don't want everything after to disappear
+        fwrite(dst, sizeof(dst[0]), length, stdout);
+        goto Success;
+    }
+
+    if (file_write(dst_file, dst, length)) {
+        printf("Data was successfully written to file '%s'.\n", dst_file);
+        goto Success;
+    }
+
+    out = -1;
+
+Success:
+    free(dst);
+    free(src);
+
+    return out;
 }
